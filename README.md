@@ -271,6 +271,22 @@ my-project/
 └── BUILD_LOG.md          # Generated on export
 ```
 
+### Branch-scoped storage (multi-branch workflows)
+
+By default, all git branches share the single `.buildwithai/` directory. Set `BUILD_WITH_AI_BRANCH_SCOPED=1`
+to isolate state per branch:
+
+```bash
+export BUILD_WITH_AI_BRANCH_SCOPED=1
+```
+
+When enabled, the CLI detects the current git branch and stores that branch's `state.json`, `context.json`
+and `history/` under `.buildwithai/branches/<branch-name>/` instead. Branch names are sanitized into a
+single safe directory segment (e.g. `feature/auth` becomes `feature-auth`), so they can never escape the
+`branches/` directory. When git is unavailable, the directory is not a git repository, or HEAD is detached,
+the CLI falls back to the default shared `.buildwithai/` storage. `reset` only clears the current branch's
+storage; other branches are left untouched.
+
 ---
 
 ## Contributing

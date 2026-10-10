@@ -15,7 +15,10 @@ const {
   loadHistory,
   getAllHistory,
   resetProject,
-  getStorageDir
+  getStorageDir,
+  isBranchScopedEnabled,
+  getCurrentGitBranch,
+  sanitizeBranchName
 } = require('../lib/state');
 
 const { loadTemplates, loadRemoteTemplate, getTemplate, resolveStepPrompt } = require('../lib/promptEngine');
@@ -939,6 +942,154 @@ async function runTests() {
     console.log('  ✔ targetFiles existence check reports missing files and prints friendly tips.');
   } finally {
     fs.rmSync(targetFilesDir, { recursive: true, force: true });
+  }
+
+  // ── Branch-scoped storage (BUILD_WITH_AI_BRANCH_SCOPED) ──
+  {
+    const previousEnv = process.env.BUILD_WITH_AI_BRANCH_SCOPED;
+    try {
+      // Default behavior stays 100% backward compatible without the env var.
+      delete process.env.BUILD_WITH_AI_BRANCH_SCOPED;
+      assert.strictEqual(isBranchScopedEnabled(), false, 'Branch scoping must be off by default');
+      const plainDir = fs.mkdtempSync(path.join(os.tmpdir(), 'buildwithai-branch-plain-'));
+      try {
+        assert.strictEqual(
+          getStorageDir(plainDir),
+          path.join(plainDir, '.buildwithai'),
+          'Storage dir must be the shared root when scoping is off'
+        );
+      } finally {
+        fs.rmSync(plainDir, { recursive: true, force: true });
+      }
+
+      // Branch names are sanitized into a single safe directory segment.
+      assert.strictEqual(sanitizeBranchName('feature/auth'), 'feature-auth');
+      assert.strictEqual(sanitizeBranchName('release 1.0'), 'release-1.0');
+      assert.strictEqual(sanitizeBranchName('main'), 'main');
+      assert.strictEqual(sanitizeBranchName('..'), null, 'Parent references must be rejected');
+      assert.strictEqual(sanitizeBranchName(''), null);
+      assert.strictEqual(sanitizeBranchName('   '), null);
+
+      // Enabled outside a git repo: fall back to the default shared storage.
+      process.env.BUILD_WITH_AI_BRANCH_SCOPED = '1';
+      assert.strictEqual(isBranchScopedEnabled(), true);
+      const nonGitDir = fs.mkdtempSync(path.join(os.tmpdir(), 'buildwithai-branch-nogit-'));
+      try {
+        assert.strictEqual(getCurrentGitBranch(nonGitDir), null, 'Non-git dir must report no branch');
+        assert.strictEqual(
+          getStorageDir(nonGitDir),
+          path.join(nonGitDir, '.buildwithai'),
+          'Must fall back to shared storage without git'
+        );
+        initState(
+          {
+            projectName: 'Fallback project',
+            templateId: 'x',
+            templateTitle: 'X',
+            experienceLevel: 'y',
+            projectIdea: 'z',
+            totalSteps: 1
+          },
+          nonGitDir
+        );
+        assert.strictEqual(loadState(nonGitDir).projectName, 'Fallback project');
+        assert(fs.existsSync(path.join(nonGitDir, '.buildwithai', 'state.json')));
+      } finally {
+        fs.rmSync(nonGitDir, { recursive: true, force: true });
+      }
+
+      // Enabled inside a git repo: state is isolated per branch.
+      let gitAvailable = true;
+      try {
+        execSync('git --version', { stdio: 'ignore' });
+      } catch {
+        gitAvailable = false;
+      }
+      if (gitAvailable) {
+        const repoDir = fs.mkdtempSync(path.join(os.tmpdir(), 'buildwithai-branch-git-'));
+        try {
+          execSync('git init -b main', { cwd: repoDir, stdio: 'ignore' });
+          // Commit first so `main` exists as a real branch before switching.
+          execSync('git -c user.email=test@test.com -c user.name=test commit --allow-empty -m init', {
+            cwd: repoDir,
+            stdio: 'ignore'
+          });
+          assert.strictEqual(getCurrentGitBranch(repoDir), 'main');
+          assert.strictEqual(getStorageDir(repoDir), path.join(repoDir, '.buildwithai', 'branches', 'main'));
+
+          initState(
+            {
+              projectName: 'Main branch project',
+              templateId: 'x',
+              templateTitle: 'X',
+              experienceLevel: 'y',
+              projectIdea: 'z',
+              totalSteps: 2
+            },
+            repoDir
+          );
+          assert.strictEqual(loadState(repoDir).projectName, 'Main branch project');
+          assert(fs.existsSync(path.join(repoDir, '.buildwithai', 'branches', 'main', 'state.json')));
+          assert(
+            !fs.existsSync(path.join(repoDir, '.buildwithai', 'state.json')),
+            'Root state.json must not be created when scoping is enabled'
+          );
+
+          execSync('git checkout -b feature/auth', { cwd: repoDir, stdio: 'ignore' });
+          assert.strictEqual(
+            getStorageDir(repoDir),
+            path.join(repoDir, '.buildwithai', 'branches', 'feature-auth'),
+            'Slashes in branch names must be sanitized, not nested'
+          );
+          assert.strictEqual(loadState(repoDir), null, 'A new branch starts with no state');
+          initState(
+            {
+              projectName: 'Feature branch project',
+              templateId: 'x',
+              templateTitle: 'X',
+              experienceLevel: 'y',
+              projectIdea: 'z',
+              totalSteps: 3
+            },
+            repoDir
+          );
+          assert.strictEqual(loadState(repoDir).projectName, 'Feature branch project');
+
+          execSync('git checkout main', { cwd: repoDir, stdio: 'ignore' });
+          assert.strictEqual(loadState(repoDir).projectName, 'Main branch project', 'Branch states must stay isolated');
+          assert.strictEqual(isInitialized(repoDir), true);
+
+          // Detached HEAD falls back to the default shared storage.
+          const headSha = execSync('git rev-parse HEAD', { cwd: repoDir, encoding: 'utf8', stdio: 'pipe' }).trim();
+          execSync(`git checkout ${headSha}`, { cwd: repoDir, stdio: 'ignore' });
+          assert.strictEqual(getCurrentGitBranch(repoDir), null, 'Detached HEAD must report no branch');
+          assert.strictEqual(
+            getStorageDir(repoDir),
+            path.join(repoDir, '.buildwithai'),
+            'Detached HEAD must fall back to shared storage'
+          );
+          execSync('git checkout main', { cwd: repoDir, stdio: 'ignore' });
+
+          // resetProject clears only the current branch's storage.
+          resetProject(repoDir);
+          assert.strictEqual(loadState(repoDir), null);
+          assert(
+            fs.existsSync(path.join(repoDir, '.buildwithai', 'branches', 'feature-auth', 'state.json')),
+            'Other branches must survive a reset'
+          );
+        } finally {
+          fs.rmSync(repoDir, { recursive: true, force: true });
+        }
+      }
+
+      console.log('  ✔ branch-scoped storage isolates state per git branch with safe fallback.');
+    } finally {
+      if (previousEnv === undefined) {
+        delete process.env.BUILD_WITH_AI_BRANCH_SCOPED;
+      } else {
+        process.env.BUILD_WITH_AI_BRANCH_SCOPED = previousEnv;
+      }
+    }
   }
 
   // Cleanup temp dir
