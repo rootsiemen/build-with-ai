@@ -22,6 +22,8 @@ const { loadTemplates, loadRemoteTemplate, getTemplate, resolveStepPrompt } = re
 
 const { getByPath, setByPath, flattenObject, formatContextAsMarkdown } = require('../lib/contextBuilder');
 
+const { parseEditorValue, formatEditorValue, summarizeValue, runConfigEditor } = require('../lib/configEditor');
+
 const { runExport, generateReadme, generateBuildLog } = require('../lib/export');
 
 const { copyToClipboard } = require('../lib/clipboard');
@@ -939,6 +941,137 @@ async function runTests() {
     console.log('  ✔ targetFiles existence check reports missing files and prints friendly tips.');
   } finally {
     fs.rmSync(targetFilesDir, { recursive: true, force: true });
+  }
+
+  // ── Interactive config editor (`config` command) ──
+  {
+    // Value parsing mirrors the `set` command: valid JSON is stored as JSON, the rest stays a string.
+    assert.strictEqual(parseEditorValue('PostgreSQL'), 'PostgreSQL');
+    assert.strictEqual(parseEditorValue('42'), 42);
+    assert.strictEqual(parseEditorValue('true'), true);
+    assert.strictEqual(parseEditorValue('null'), null);
+    assert.deepStrictEqual(parseEditorValue('{"a":1}'), { a: 1 });
+    assert.deepStrictEqual(parseEditorValue('["x","y"]'), ['x', 'y']);
+    assert.strictEqual(parseEditorValue('  padded  '), '  padded  ');
+
+    // Display helpers.
+    assert.strictEqual(formatEditorValue('plain'), 'plain');
+    assert.strictEqual(formatEditorValue(7), '7');
+    assert.strictEqual(formatEditorValue({ a: 1 }), JSON.stringify({ a: 1 }, null, 2));
+    assert(summarizeValue('x'.repeat(200)).endsWith('...'), 'Long values are truncated in the picker');
+    assert.strictEqual(summarizeValue('short'), 'short');
+
+    // Empty context: nothing to pick, so no prompt and no save.
+    let prompted = false;
+    assert.deepStrictEqual(
+      await runConfigEditor({
+        context: {},
+        inquirer: {
+          prompt: async () => {
+            prompted = true;
+          }
+        },
+        save: () => {
+          throw new Error('must not save');
+        }
+      }),
+      { updated: false, reason: 'empty' }
+    );
+    assert.strictEqual(prompted, false, 'Empty context must not prompt');
+
+    const stubInquirer = (answers) => ({ prompt: async () => answers.shift() });
+
+    // Full edit flow: JSON input is parsed and saved, with before/after reported.
+    const context = { decisions: { database: 'SQLite', retries: 3 } };
+    let saved = null;
+    const edited = await runConfigEditor({
+      context,
+      inquirer: stubInquirer([{ selectedKey: 'decisions.database' }, { rawValue: '"PostgreSQL"' }]),
+      save: (ctx) => {
+        saved = ctx;
+      }
+    });
+    assert.strictEqual(edited.updated, true);
+    assert.strictEqual(edited.key, 'decisions.database');
+    assert.strictEqual(edited.before, 'SQLite');
+    assert.strictEqual(edited.after, 'PostgreSQL');
+    assert.strictEqual(saved.decisions.database, 'PostgreSQL');
+    assert.strictEqual(context.decisions.database, 'PostgreSQL');
+
+    // Blank input cancels the edit; nothing is saved.
+    saved = null;
+    const cancelled = await runConfigEditor({
+      context: { decisions: { a: 1 } },
+      inquirer: stubInquirer([{ selectedKey: 'decisions.a' }, { rawValue: '   ' }]),
+      save: (ctx) => {
+        saved = ctx;
+      }
+    });
+    assert.strictEqual(cancelled.updated, false);
+    assert.strictEqual(cancelled.reason, 'cancelled');
+    assert.strictEqual(cancelled.key, 'decisions.a');
+    assert.strictEqual(saved, null);
+
+    // Identical value: no save needed.
+    saved = null;
+    const unchanged = await runConfigEditor({
+      context: { decisions: { a: 1 } },
+      inquirer: stubInquirer([{ selectedKey: 'decisions.a' }, { rawValue: '1' }]),
+      save: (ctx) => {
+        saved = ctx;
+      }
+    });
+    assert.strictEqual(unchanged.updated, false);
+    assert.strictEqual(unchanged.reason, 'unchanged');
+    assert.strictEqual(saved, null);
+
+    console.log('  ✔ config editor parses values like `set` and handles cancel/unchanged/empty.');
+
+    // CLI-level: `config` needs an interactive terminal.
+    const configDir = fs.mkdtempSync(path.join(os.tmpdir(), 'buildwithai-config-cli-'));
+    try {
+      initState(
+        {
+          projectName: 'Config CLI',
+          templateId: 'x',
+          templateTitle: 'X',
+          experienceLevel: 'y',
+          projectIdea: 'z',
+          totalSteps: 1
+        },
+        configDir
+      );
+      const nonInteractive = spawnSync(process.execPath, [path.join(__dirname, '..', 'bin', 'cli.js'), 'config'], {
+        cwd: configDir,
+        encoding: 'utf8',
+        stdio: 'pipe',
+        timeout: 15000
+      });
+      assert.strictEqual(nonInteractive.status, 1, 'Non-interactive config must exit non-zero');
+      assert(
+        (nonInteractive.stderr + nonInteractive.stdout).includes('interactive terminal'),
+        'Non-interactive config must explain the fallback'
+      );
+
+      // Without an initialized project, `config` refuses before any prompt.
+      const noProjectDir = fs.mkdtempSync(path.join(os.tmpdir(), 'buildwithai-config-noproj-'));
+      try {
+        const noProject = spawnSync(process.execPath, [path.join(__dirname, '..', 'bin', 'cli.js'), 'config'], {
+          cwd: noProjectDir,
+          encoding: 'utf8',
+          stdio: 'pipe',
+          timeout: 15000
+        });
+        assert.strictEqual(noProject.status, 1);
+        assert((noProject.stderr + noProject.stdout).includes('No project found'));
+      } finally {
+        fs.rmSync(noProjectDir, { recursive: true, force: true });
+      }
+
+      console.log('  ✔ `config` falls back cleanly without a TTY and requires an initialized project.');
+    } finally {
+      fs.rmSync(configDir, { recursive: true, force: true });
+    }
   }
 
   // Cleanup temp dir

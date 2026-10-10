@@ -173,12 +173,18 @@ Recommend the optimal production tech stack...
 ------------------------------------------------------------
 ```
 
-### 5. Inspect and Modify Decisions (`context` & `set`)
+### 5. Inspect and Modify Decisions (`context`, `set` & `config`)
 View stored decisions or update any value directly using dot-notation:
 
 ```bash
 npx build-with-ai context
 npx build-with-ai set decisions.database "PostgreSQL with Prisma"
+```
+
+Or edit decisions interactively — pick a key from a list and type the new value (JSON is parsed automatically):
+
+```bash
+npx build-with-ai config
 ```
 
 ### 6. Track Progress (`status` & `resume`)
@@ -231,6 +237,7 @@ Use `--out-dir <path>` to export to a custom directory or `--dry-run` to preview
 | `npx build-with-ai jump [step]` | Navigate directly to a specific step number. |
 | `npx build-with-ai context [key]` | Inspect recorded decisions or retrieve a specific dot-notation path. |
 | `npx build-with-ai set <key> <value>` | Update a decision in `context.json` from the command line. |
+| `npx build-with-ai config` | Interactively browse and edit recorded decisions (key picker, JSON values parsed). |
 | `npx build-with-ai status [--json]` | Display project progress bar, step list, and recorded decisions. |
 | `npx build-with-ai history [step] [--json]` | Display archived AI responses and step logs. |
 | `npx build-with-ai resume` | Overview dashboard summarizing active step and next action. |

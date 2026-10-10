@@ -16,6 +16,7 @@ const {
 } = require('../lib/state');
 const { loadTemplates, getTemplate, resolveStepPrompt } = require('../lib/promptEngine');
 const { setByPath, getByPath, flattenObject } = require('../lib/contextBuilder');
+const { runConfigEditor, formatEditorValue } = require('../lib/configEditor');
 const { copyToClipboard } = require('../lib/clipboard');
 const { displayStep, renderProgressBar, displayBanner, formatElapsedTime, printTargetFileTips } = require('../lib/ui');
 const { runInit } = require('../lib/init');
@@ -541,6 +542,44 @@ program
       console.log(`  ${pc.bold('After: ')} ${pc.green(value)}`);
     } else {
       logger.success(`Set "${key}" = "${value}"`);
+    }
+    console.log();
+  });
+
+// ─────────────────────────────────────────────────
+// `config` command — interactive context editor
+// ─────────────────────────────────────────────────
+program
+  .command('config')
+  .description('Interactively browse and edit recorded context decisions.')
+  .action(async () => {
+    if (!isInitialized()) {
+      logger.error('No project found in this directory. Run `npx build-with-ai init` first.');
+      process.exit(1);
+    }
+
+    // Non-interactive fallback: point at the headless equivalents instead of hanging on a prompt.
+    if (!process.stdin.isTTY) {
+      logger.error(
+        'The config editor needs an interactive terminal. Use `npx build-with-ai context` to view decisions or `npx build-with-ai set <key> <value>` to update one.'
+      );
+      process.exit(1);
+    }
+
+    const context = loadContext();
+    const result = await runConfigEditor({ context, inquirer, save: (updated) => saveContext(updated) });
+
+    console.log();
+    if (result.updated) {
+      logger.success(`Updated "${result.key}"`);
+      console.log(`  ${pc.dim('Before:')} ${pc.dim(formatEditorValue(result.before))}`);
+      console.log(`  ${pc.bold('After: ')} ${pc.green(formatEditorValue(result.after))}`);
+    } else if (result.reason === 'empty') {
+      console.log(pc.dim('No decisions recorded yet. Run `npx build-with-ai done` after completing a step.'));
+    } else if (result.reason === 'unchanged') {
+      console.log(pc.dim(`"${result.key}" unchanged — no save needed.`));
+    } else {
+      console.log(pc.dim('Edit cancelled — nothing changed.'));
     }
     console.log();
   });
