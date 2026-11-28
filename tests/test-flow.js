@@ -3670,6 +3670,57 @@ async function runTests() {
     true,
     'JSX with nested braces and an arrow function must pass validation'
   );
+  // JSX text: apostrophes and slashes are plain text, not the start of a
+  // string or regex literal (review on #266).
+  assert.strictEqual(
+    validateBlockContent({
+      path: 'src/App.js',
+      content: "export default function A() {\n  return <p>It's ready</p>;\n}\n"
+    }).valid,
+    true,
+    'an apostrophe in JSX text must not start a string literal'
+  );
+  assert.strictEqual(
+    validateBlockContent({
+      path: 'src/App.js',
+      content: 'export default function A() {\n  return <p>path: /\nmore text</p>;\n}\n'
+    }).valid,
+    true,
+    'a slash in JSX text must not start a regex literal'
+  );
+  assert.strictEqual(
+    validateBlockContent({
+      path: 'src/App.js',
+      content: "export default function A({ name }) {\n  return <p>It's {name} — see /docs</p>;\n}\n"
+    }).valid,
+    true,
+    'JSX text with an apostrophe, an expression and a slash must pass validation'
+  );
+  assert.strictEqual(
+    validateBlockContent({
+      path: 'src/App.js',
+      content: "export default function A() {\n  return <p>It's ready</p>;\n"
+    }).valid,
+    false,
+    'JSX text must not hide an unclosed function body'
+  );
+  assert.strictEqual(
+    validateBlockContent({
+      path: 'src/App.js',
+      content:
+        'export default function List({ items }) {\n  return <p>{items.map((i) => <li key={i}>{i}</li>)} (done)</p>;\n}\n'
+    }).valid,
+    true,
+    'code delimiters after a nested JSX element inside an expression must still balance'
+  );
+  assert.strictEqual(
+    validateBlockContent({
+      path: 'src/App.js',
+      content: 'export default function A() {\n  return <div title="a > b">It\'s ok</div>;\n}\n'
+    }).valid,
+    true,
+    'JSX attribute strings and text apostrophes must pass validation'
+  );
   console.log('  ✔ Truncated-block detection and syntax validation.');
 
   console.log('  ✔ File-block and decisions parsing.');
